@@ -8,29 +8,28 @@
 #include <sstream>
 #include <deque>
 #include <optional>
-#include <cstdint> // เพิ่มเข้ามาเพื่อใช้งาน uint8_t 
-
+#include <cstdint>
+ 
 using namespace std;
-
+ 
 struct Point {
     int x = 0, y = 0;
     bool operator==(const Point& other) const { return x == other.x && y == other.y; }
 };
-
-// ── Effect popup shown on board ───────────────────────────────────────
+ 
 struct EffectPopup {
     Point tile;
-    string label;   // e.g. "TRAP  -10HP"
+    string label;
     sf::Color color;
-    float alpha = 255.f;   // fades over time
-    float offsetY = 0.f;   // floats upward
+    float alpha = 255.f;
+    float offsetY = 0.f;
 };
-
+ 
 class Player {
 public:
     Player(string name_, char icon_, sf::Color color_)
         : name(name_), icon(icon_), color(color_) {}
-
+ 
     bool isAlive()         const { return alive; }
     bool isPoisoned()      const { return poisoned; }
     int  getHp()           const { return hp; }
@@ -40,24 +39,29 @@ public:
     string getName()      const { return name; }
     char getIcon()        const { return icon; }
     sf::Color getColor()  const { return color; }
-
+ 
     void setPoisoned(bool p, int turns = 3) { poisoned = p; poisonTurns = turns; }
     void setMovable(bool m) { movable = m; }
     void setBlockDiceTarget(int t) { blockTarget = t; }
     void setPosition(Point p) { pos = p; }
     void revive() { hp=100; alive=true; poisoned=false; movable=true; poisonTurns=0; blockTarget=0; }
-
+ 
     int rollDice() { return (rand()%6)+1; }
-
-    bool move(const string& dir) {
+ 
+    // ── แก้ไข: รับ Board& เพื่อเช็คกำแพง ────────────────────────────
+    // forward declare เป็น template เพื่อหลีกเลี่ยง circular dependency
+    template<typename BoardT>
+    bool move(const string& dir, BoardT& board) {
         if (!movable) return false;
         Point n = pos;
         if (dir=="W") n.y--; if (dir=="S") n.y++;
         if (dir=="A") n.x--; if (dir=="D") n.x++;
-        if (n.x>=0&&n.x<10&&n.y>=0&&n.y<10){ pos=n; return true; }
+        if (n.x>=0 && n.x<10 && n.y>=0 && n.y<10 && board.isWalkable(n.x,n.y)){
+            pos=n; return true;
+        }
         return false;
     }
-
+ 
     void takeDamage(int dmg) {
         hp -= dmg;
         if (hp<=0){hp=0;alive=false;}
@@ -78,7 +82,7 @@ public:
         return false;
     }
     float getHpPercent() const { return hp/100.0f; }
-
+ 
 private:
     string name; char icon; sf::Color color;
     int hp=100;
@@ -86,33 +90,31 @@ private:
     bool alive=true, poisoned=false, movable=true;
     int poisonTurns=0, blockTarget=0;
 };
-
+ 
 class Board;
 static bool boardWalkable(Board& b,int x,int y);
 static Point randomNearby(Board& board,Point centre);
-
+ 
 class Tile {
 public:
     virtual ~Tile(){}
-    // returns effect description string
     virtual string onStep(Player& p,vector<Player>& all,Board& board) = 0;
     virtual bool isWalkable() const { return true; }
     virtual string getName()  const { return "?"; }
     virtual int getType()     const { return 0; }
-    // overlay info
     virtual string overlayLine1() const { return ""; }
     virtual string overlayLine2() const { return ""; }
     virtual sf::Color overlayColor() const { return sf::Color::White; }
     virtual sf::Color borderColor()  const { return sf::Color(0,0,0,0); }
 };
-
+ 
 class NormalTile : public Tile {
 public:
     string onStep(Player&,vector<Player>&,Board&) override { return ""; }
     string getName() const override { return "Normal"; }
     int getType()    const override { return 0; }
 };
-
+ 
 class WallTile : public Tile {
 public:
     string onStep(Player&,vector<Player>&,Board&) override { return ""; }
@@ -123,7 +125,7 @@ public:
     sf::Color overlayColor() const override { return sf::Color(220,120,120); }
     sf::Color borderColor()  const override { return sf::Color(180,60,60,200); }
 };
-
+ 
 class TrapTile : public Tile {
 public:
     string onStep(Player& p,vector<Player>&,Board&) override {
@@ -139,7 +141,7 @@ public:
     sf::Color overlayColor() const override { return sf::Color(255,160,80); }
     sf::Color borderColor()  const override { return sf::Color(255,120,30,230); }
 };
-
+ 
 class AntidoteTile : public Tile {
 public:
     string onStep(Player& p,vector<Player>&,Board& board) override {
@@ -156,7 +158,7 @@ public:
     sf::Color overlayColor() const override { return sf::Color(80,255,160); }
     sf::Color borderColor()  const override { return sf::Color(60,255,130,230); }
 };
-
+ 
 static void applyCard(int card,Player& p,vector<Player>& all,string& msg){
     switch(card){
         case 1:{ int tot=0,cnt=0;
@@ -176,7 +178,7 @@ static void applyCard(int card,Player& p,vector<Player>& all,string& msg){
         default: msg="???";
     }
 }
-
+ 
 class QuestionableTile : public Tile {
 public:
     string onStep(Player& p,vector<Player>& all,Board&) override {
@@ -191,32 +193,28 @@ public:
     sf::Color overlayColor() const override { return sf::Color(255,240,80); }
     sf::Color borderColor()  const override { return sf::Color(255,230,50,230); }
 };
-
+ 
 // ════════════════════════════════════════════════════════════════════
 class Board {
 public:
     Board(){ reset(); }
     ~Board(){ clear(); }
-
+ 
     void reset(){
         clear();
         grid.resize(10,vector<Tile*>(10,nullptr));
         for(int i=0;i<10;i++) for(int j=0;j<10;j++) grid[i][j]=new NormalTile();
-        // Trap ×4
         setTile(2,2,new TrapTile()); setTile(7,1,new TrapTile());
         setTile(4,6,new TrapTile()); setTile(8,8,new TrapTile());
-        // Antidote ×3
         setTile(5,5,new AntidoteTile()); setTile(1,4,new AntidoteTile());
         setTile(8,3,new AntidoteTile());
-        // Questionable ×4
         setTile(7,3,new QuestionableTile()); setTile(3,7,new QuestionableTile());
         setTile(0,9,new QuestionableTile()); setTile(9,0,new QuestionableTile());
-        // Wall ×5
         setTile(1,8,new WallTile()); setTile(3,3,new WallTile());
         setTile(6,6,new WallTile()); setTile(0,5,new WallTile());
         setTile(9,4,new WallTile());
     }
-
+ 
     void setTile(int x,int y,Tile* t){ delete grid[y][x]; grid[y][x]=t; }
     Tile* getTile(int x,int y) const { return (x>=0&&x<10&&y>=0&&y<10)?grid[y][x]:nullptr; }
     bool isWalkable(int x,int y) const {
@@ -231,7 +229,7 @@ public:
         if(x<0||x>=10||y<0||y>=10) return nullptr;
         return grid[y][x];
     }
-
+ 
     void shrink(int layer){
         if(layer>=5) return;
         for(int i=layer;i<10-layer;i++){
@@ -239,12 +237,12 @@ public:
             setTile(i,layer,new WallTile());   setTile(i,9-layer,new WallTile());
         }
     }
-
+ 
 private:
     vector<vector<Tile*>> grid;
     void clear(){ for(auto& row:grid) for(auto* t:row) delete t; grid.clear(); }
 };
-
+ 
 static bool boardWalkable(Board& b,int x,int y){ return b.isWalkable(x,y); }
 static Point randomNearby(Board& board,Point centre){
     vector<Point> cands;
@@ -256,7 +254,7 @@ static Point randomNearby(Board& board,Point centre){
     if(cands.empty()) return centre;
     return cands[rand()%cands.size()];
 }
-
+ 
 // ════════════════════════════════════════════════════════════════════
 class GameEngine {
 public:
@@ -269,7 +267,7 @@ public:
         };
         resetGame();
     }
-
+ 
     void resetGame(){
         board.reset();
         for(auto& p:players) p.revive();
@@ -286,17 +284,16 @@ public:
         activeGasZones.clear(); logLines.clear(); popups.clear();
         addLog("เริ่มเกม! ผู้เล่นแรก: "+players[currentPlayer].getName());
     }
-
+ 
     void addLog(const string& msg){
         logLines.push_front(msg);
         if(logLines.size()>10) logLines.pop_back();
     }
-
-    // spawn a floating popup on a tile
+ 
     void spawnPopup(Point tile,const string& label,sf::Color col){
         popups.push_back({tile,label,col,255.f,0.f});
     }
-
+ 
     void rollDice(){
         if(gameOver) return;
         Player& p=players[currentPlayer];
@@ -307,29 +304,38 @@ public:
         int roll=p.rollDice(); stepsLeft=roll; hasRolled=true;
         addLog(p.getName()+" ทอยได้ "+to_string(roll)+" ก้าว");
     }
-
+ 
     void movePlayer(const string& dir){
         if(gameOver||!hasRolled||stepsLeft<=0) return;
         Player& p=players[currentPlayer];
-        if(!p.move(dir)){ addLog("เดินไม่ได้!"); return; }
+ 
+        // ── แก้ไข: เช็คว่า next tile เดินได้ก่อน ────────────────────
+        Point cur=p.getPosition(), next=cur;
+        if(dir=="W") next.y--; if(dir=="S") next.y++;
+        if(dir=="A") next.x--; if(dir=="D") next.x++;
+ 
+        if(!board.isWalkable(next.x,next.y)){
+            addLog("เดินไม่ได้! มีกำแพงหรือขอบบอร์ด");
+            return;
+        }
+ 
+        if(!p.move(dir,board)){ addLog("เดินไม่ได้!"); return; }
         stepsLeft--;
-
-        // ── trigger effect on EVERY step ─────────────────────────────
+ 
         Tile* t=board.getTile(p.getPosition().x,p.getPosition().y);
         if(t){
             string result=t->onStep(p,players,board);
             if(!result.empty()){
                 addLog(p.getName()+": "+result);
-                // popup above the tile the player landed on
                 spawnPopup(p.getPosition(), result,
                            t->overlayColor()==sf::Color::White
                                ? sf::Color(255,220,80) : t->overlayColor());
             }
         }
-
+ 
         if(stepsLeft==0) nextTurn();
     }
-
+ 
     void nextTurn(){
         if(gameOver) return;
         hasRolled=false; stepsLeft=0;
@@ -346,7 +352,7 @@ public:
         do{ currentPlayer=(currentPlayer+1)%4; } while(!players[currentPlayer].isAlive());
         addLog("เทิร์น: "+players[currentPlayer].getName());
     }
-
+ 
     void randomGasZone(){
         if(rand()%2==0) return;
         int ox=rand()%8,oy=rand()%8;
@@ -362,7 +368,7 @@ public:
             }
         }
     }
-
+ 
     void checkWinner(){
         vector<Player*> alive;
         for(auto& p:players) if(p.isAlive()) alive.push_back(&p);
@@ -371,17 +377,16 @@ public:
             addLog("จบเกม - "+winner);
         }
     }
-
-    // call once per frame to animate popups
+ 
     void tickPopups(float dt){
         for(auto& pop:popups){
-            pop.offsetY -= 40.f*dt;   // float up 40px/s
-            pop.alpha   -= 180.f*dt;  // fade over ~1.4s
+            pop.offsetY -= 40.f*dt;
+            pop.alpha   -= 180.f*dt;
         }
         popups.erase(remove_if(popups.begin(),popups.end(),
             [](const EffectPopup& p){ return p.alpha<=0.f; }),popups.end());
     }
-
+ 
     vector<Player>& getPlayers()         { return players; }
     int getCurrentPlayer()         const { return currentPlayer; }
     bool isGameOver()              const { return gameOver; }
@@ -392,7 +397,7 @@ public:
     Board& getBoard()                    { return board; }
     vector<pair<int,int>>& getGasZones() { return activeGasZones; }
     vector<EffectPopup>& getPopups()     { return popups; }
-
+ 
 private:
     vector<Player> players;
     Board board;
@@ -403,9 +408,7 @@ private:
     vector<pair<int,int>> activeGasZones;
     vector<EffectPopup> popups;
 };
-
-// ════════════════════════════════════════════════════════════════════
-// Drawing helpers
+ 
 // ════════════════════════════════════════════════════════════════════
 void drawRoundedRect(sf::RenderWindow& win,float x,float y,float w,float h,
                      sf::Color fill,sf::Color outline,float thick,float=10.f){
@@ -423,7 +426,7 @@ void drawText(sf::RenderWindow& win,sf::Font& font,const string& str,float x,flo
     sf::Text t(font,sf::String::fromUtf8(str.begin(),str.end()),size);
     t.setFillColor(col); t.setPosition({x,y}); win.draw(t);
 }
-
+ 
 void drawPlayerCard(sf::RenderWindow& win,sf::Font& font,const Player& p,
                     float x,float y,float w,float h,bool isCurrent){
     sf::Color bc=isCurrent?sf::Color(255,210,50):sf::Color(80,85,120);
@@ -446,8 +449,7 @@ void drawPlayerCard(sf::RenderWindow& win,sf::Font& font,const Player& p,
     br.setOutlineColor(bc2); br.setOutlineThickness(1.f); win.draw(br);
     drawText(win,font,badge,x+14,y+92,14,bc2);
 }
-
-// ── static label on tile (only wall in normal mode) ──────────────────
+ 
 void drawTileOverlay(sf::RenderWindow& win,sf::Font& font,
                      const string& line1,const string& line2,
                      float cx,float cy,float cs,sf::Color textCol){
@@ -467,7 +469,7 @@ void drawTileOverlay(sf::RenderWindow& win,sf::Font& font,
         t2.setPosition({cx-b2.size.x/2.f,cy+1.f}); win.draw(t2);
     }
 }
-
+ 
 // ════════════════════════════════════════════════════════════════════
 void drawBoard(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
                float bx,float by,float bsize,bool showOverlay){
@@ -475,59 +477,63 @@ void drawBoard(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
     auto& board=game.getBoard();
     auto& players=game.getPlayers();
     auto& gasZones=game.getGasZones();
-
-    // board bg
+ 
     sf::RectangleShape bbg(sf::Vector2f(bsize+4,bsize+4));
     bbg.setPosition({bx-2,by-2}); bbg.setFillColor(sf::Color(15,18,30));
     bbg.setOutlineColor(sf::Color(60,65,100)); bbg.setOutlineThickness(2.f); win.draw(bbg);
-
+ 
     for(int cy=0;cy<10;cy++) for(int cx=0;cx<10;cx++){
         float px=bx+cx*cs, py=by+cy*cs;
         int type=board.getTileType(cx,cy);
         Tile* tileObj=board.getTileObj(cx,cy);
-
+ 
+        // ── สีพื้น tile ──────────────────────────────────────────────
         sf::Color cellColor;
         switch(type){
-            case 1: cellColor=sf::Color(55,30,30); break;
-            case 2: cellColor=sf::Color(30,55,30); break;
-            case 3: cellColor=sf::Color(30,50,60); break;
-            case 4: cellColor=sf::Color(55,50,30); break;
+            case 1: cellColor=sf::Color(55,30,30); break;   // wall
+            // ── แก้ไข: ซ่อน tile ที่ไม่ใช่ wall เมื่อ showOverlay=false ──
+            case 2: cellColor=showOverlay?sf::Color(30,55,30):sf::Color(35,42,65); break;  // trap
+            case 3: cellColor=showOverlay?sf::Color(30,50,60):sf::Color(35,42,65); break;  // antidote
+            case 4: cellColor=showOverlay?sf::Color(55,50,30):sf::Color(35,42,65); break;  // ?card
             default: cellColor=sf::Color(35,42,65);
         }
         bool inGas=false;
         for(auto& gz:gasZones)
             if(cx>=gz.first&&cx<=gz.first+2&&cy>=gz.second&&cy<=gz.second+2)
             { cellColor=sf::Color(60,35,20); inGas=true; }
-
+ 
         sf::RectangleShape cell(sf::Vector2f(cs-2,cs-2));
         cell.setPosition({px+1,py+1}); cell.setFillColor(cellColor); win.draw(cell);
-
-        // tile icons
-        if(type==2){
-            sf::RectangleShape m(sf::Vector2f(cs*.35f,cs*.35f));
-            m.setPosition({px+cs*.3f,py+cs*.3f}); m.setFillColor(sf::Color(220,120,50,200)); win.draw(m);
-        } else if(type==3){
-            sf::RectangleShape h(sf::Vector2f(cs*.5f,cs*.15f));
-            h.setPosition({px+cs*.25f,py+cs*.425f}); h.setFillColor(sf::Color(60,220,120,200)); win.draw(h);
-            sf::RectangleShape v(sf::Vector2f(cs*.15f,cs*.5f));
-            v.setPosition({px+cs*.425f,py+cs*.25f}); v.setFillColor(sf::Color(60,220,120,200)); win.draw(v);
-        } else if(type==4){
-            sf::RectangleShape m(sf::Vector2f(cs*.35f,cs*.35f));
-            m.setPosition({px+cs*.3f,py+cs*.3f}); m.setFillColor(sf::Color(220,200,50,180)); win.draw(m);
-        } else if(type==1){
+ 
+        // ── แก้ไข: วาด tile icons เฉพาะตอน showOverlay=true ────────
+        if(showOverlay){
+            if(type==2){
+                sf::RectangleShape m(sf::Vector2f(cs*.35f,cs*.35f));
+                m.setPosition({px+cs*.3f,py+cs*.3f}); m.setFillColor(sf::Color(220,120,50,200)); win.draw(m);
+            } else if(type==3){
+                sf::RectangleShape h(sf::Vector2f(cs*.5f,cs*.15f));
+                h.setPosition({px+cs*.25f,py+cs*.425f}); h.setFillColor(sf::Color(60,220,120,200)); win.draw(h);
+                sf::RectangleShape v(sf::Vector2f(cs*.15f,cs*.5f));
+                v.setPosition({px+cs*.425f,py+cs*.25f}); v.setFillColor(sf::Color(60,220,120,200)); win.draw(v);
+            } else if(type==4){
+                sf::RectangleShape m(sf::Vector2f(cs*.35f,cs*.35f));
+                m.setPosition({px+cs*.3f,py+cs*.3f}); m.setFillColor(sf::Color(220,200,50,180)); win.draw(m);
+            }
+        }
+ 
+        // Wall วาดเสมอ (ไม่ว่า showOverlay จะเป็นอะไร)
+        if(type==1){
             sf::RectangleShape w(sf::Vector2f(cs-4,cs-4));
             w.setPosition({px+2,py+2}); w.setFillColor(sf::Color(70,35,35)); win.draw(w);
         }
-
+ 
         // grid lines
         sf::RectangleShape lh(sf::Vector2f(cs,1)); lh.setPosition({px,py}); lh.setFillColor(sf::Color(50,55,80,100)); win.draw(lh);
         sf::RectangleShape lv(sf::Vector2f(1,cs)); lv.setPosition({px,py}); lv.setFillColor(sf::Color(50,55,80,100)); win.draw(lv);
-
-        // ── static overlay ───────────────────────────────────────────
+ 
         float ccx=px+cs/2.f, ccy=py+cs/2.f;
-
+ 
         if(showOverlay && tileObj){
-            // bright border
             sf::Color bc=tileObj->borderColor();
             if(bc.a>0){
                 sf::RectangleShape bdr(sf::Vector2f(cs-2,cs-2));
@@ -539,23 +545,28 @@ void drawBoard(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
                 bdr.setPosition({px+1,py+1}); bdr.setFillColor(sf::Color(0,0,0,0));
                 bdr.setOutlineColor(sf::Color(255,160,30,200)); bdr.setOutlineThickness(2.5f); win.draw(bdr);
             }
-            // label
             if(!tileObj->overlayLine1().empty())
                 drawTileOverlay(win,font,tileObj->overlayLine1(),tileObj->overlayLine2(),
                                 ccx,ccy,cs,tileObj->overlayColor());
             else if(inGas)
                 drawTileOverlay(win,font,"GAS","-5 HP",ccx,ccy,cs,sf::Color(255,180,60));
         } else {
-            // normal mode: wall label only
+            // ── โหมดปกติ: แสดงเฉพาะ Wall ────────────────────────────
             if(type==1){
                 sf::RectangleShape bdr(sf::Vector2f(cs-2,cs-2));
                 bdr.setPosition({px+1,py+1}); bdr.setFillColor(sf::Color(0,0,0,0));
                 bdr.setOutlineColor(sf::Color(180,60,60,200)); bdr.setOutlineThickness(2.f); win.draw(bdr);
                 drawTileOverlay(win,font,"WALL","",ccx,ccy,cs,sf::Color(220,120,120));
             }
+            // Gas zone outline แสดงเสมอแม้ไม่ showOverlay
+            if(inGas){
+                sf::RectangleShape bdr(sf::Vector2f(cs-2,cs-2));
+                bdr.setPosition({px+1,py+1}); bdr.setFillColor(sf::Color(0,0,0,0));
+                bdr.setOutlineColor(sf::Color(200,120,30,140)); bdr.setOutlineThickness(1.5f); win.draw(bdr);
+            }
         }
     }
-
+ 
     // gas zone radius outline
     for(auto& gz:gasZones){
         float gx=bx+gz.first*cs, gy=by+gz.second*cs;
@@ -567,30 +578,25 @@ void drawBoard(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
             drawTileOverlay(win,font,"GAS ZONE","-5HP each",
                             gx+cs*1.5f,gy+cs*1.5f,cs*2.f,sf::Color(255,200,80));
     }
-
-    // ── floating effect popups ────────────────────────────────────────
+ 
+    // floating effect popups
     for(auto& pop:game.getPopups()){
         float px2=bx+pop.tile.x*cs+cs/2.f;
         float py2=by+pop.tile.y*cs+cs/2.f + pop.offsetY - cs*0.4f;
-        
-        // แก้ไขจุดนี้: เปลี่ยนจาก sf::Uint8 เป็น int มาตรฐานเพื่อรองรับ SFML 3
         int a = static_cast<int>(max(0.f,min(255.f,pop.alpha)));
-
-        // background pill
+ 
         sf::Text txt(font,sf::String::fromUtf8(pop.label.begin(),pop.label.end()),11);
         txt.setFillColor(sf::Color(pop.color.r,pop.color.g,pop.color.b, static_cast<uint8_t>(a)));
         auto tb=txt.getLocalBounds();
         float bw=tb.size.x+10.f, bh=tb.size.y+6.f;
         sf::RectangleShape pill(sf::Vector2f(bw,bh));
         pill.setPosition({px2-bw/2.f,py2-2.f});
-        
-        // แก้ไขจุดนี้: เปลี่ยนการแปลงประเภทข้อมูลเป็นแบบธรรมดา ไม่ใช้ sf::Uint8
         pill.setFillColor(sf::Color(0,0,0,static_cast<uint8_t>(a*0.7f)));
         pill.setOutlineColor(sf::Color(pop.color.r,pop.color.g,pop.color.b, static_cast<uint8_t>(a)));
         pill.setOutlineThickness(1.f); win.draw(pill);
         txt.setPosition({px2-tb.size.x/2.f,py2}); win.draw(txt);
     }
-
+ 
     // players
     int ci=game.getCurrentPlayer();
     for(int i=0;i<4;i++){
@@ -615,7 +621,7 @@ void drawBoard(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
         icon.setPosition({px2+cs/2-bd.size.x/2,py2+cs/2-bd.size.y/2-2}); win.draw(icon);
     }
 }
-
+ 
 void drawLegend(sf::RenderWindow& win,sf::Font& font,float x,float y,float w,float h){
     drawRoundedRect(win,x,y,w,h,sf::Color(22,25,42,230),sf::Color(60,65,100),1.f);
     drawText(win,font,"คำอธิบาย",x+14,y+8,15,sf::Color(180,185,210));
@@ -655,7 +661,7 @@ void drawLegend(sf::RenderWindow& win,sf::Font& font,float x,float y,float w,flo
         drawText(win,font,c.second,x+26,iy,12,sf::Color(180,185,200)); iy+=18;
     }
 }
-
+ 
 void drawLog(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
              float x,float y,float w,float h){
     drawRoundedRect(win,x,y,w,h,sf::Color(18,20,38,230),sf::Color(60,65,100),1.f);
@@ -666,20 +672,19 @@ void drawLog(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
         ly+=16; if(ly>y+h-12) break;
     }
 }
-
+ 
 void drawControls(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
                   float x,float y,float w,float h,bool showOverlay){
     drawRoundedRect(win,x,y,w,h,sf::Color(20,22,40,200),sf::Color(55,60,95),1.f);
     auto& players=game.getPlayers(); int ci=game.getCurrentPlayer();
-
+ 
     if(!game.isGameOver()){
-        // overlay badge
         sf::Color ic=showOverlay?sf::Color(80,200,120):sf::Color(100,100,130);
         sf::RectangleShape ind(sf::Vector2f(130,20)); ind.setPosition({x+w-148,y+6});
         ind.setFillColor(showOverlay?sf::Color(20,60,35):sf::Color(25,25,45));
         ind.setOutlineColor(ic); ind.setOutlineThickness(1.f); win.draw(ind);
         drawText(win,font,showOverlay?"[E] Effect: ON":"[E] Effect: OFF",x+w-145,y+7,12,ic);
-
+ 
         struct TL{ sf::Color c; string l; };
         vector<TL> tiles={{sf::Color(80,80,90),"ปกติ"},{sf::Color(200,80,40),"กับดัก"},
                           {sf::Color(60,200,100),"ยาแก้พิษ"},{sf::Color(80,200,80),"ไพ่?"},
@@ -689,10 +694,10 @@ void drawControls(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
             sf::RectangleShape dot(sf::Vector2f(10,10)); dot.setPosition({lx,y+10}); dot.setFillColor(tl.c); win.draw(dot);
             drawText(win,font,tl.l,lx+13,y+7,13,sf::Color(190,195,215)); lx+=90;
         }
-
+ 
         drawText(win,font,"เทิร์นของ "+players[ci].getName()+"   หยอดลูกเต๋า",
                  x+w/2-130,y+32,16,sf::Color(240,240,100));
-
+ 
         float bx2=x+w/2-150,by2=y+54,bw=300,bh=30;
         sf::RectangleShape btn(sf::Vector2f(bw,bh)); btn.setPosition({bx2,by2});
         bool canRoll=!game.hasRolledYet();
@@ -701,7 +706,7 @@ void drawControls(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
         btn.setOutlineThickness(1.5f); win.draw(btn);
         string bl=canRoll?"หยอดลูกเต๋า [SPACE]":"Steps: "+to_string(game.getStepsLeft())+" [WASD]";
         drawText(win,font,bl,bx2+12,by2+7,14,sf::Color(220,220,255));
-
+ 
         drawText(win,font,"WASD/Arrow=เดิน  R=รีเซ็ต  E=Effect overlay",
                  x+w/2-190,y+92,14,sf::Color(150,155,180));
     } else {
@@ -710,23 +715,23 @@ void drawControls(sf::RenderWindow& win,sf::Font& font,GameEngine& game,
         drawText(win,font,"Press R to reset",x+w/2-80,y+68,14,sf::Color(180,185,210));
     }
 }
-
+ 
 // ════════════════════════════════════════════════════════════════════
 int main(){
     srand(time(0));
     sf::RenderWindow window(sf::VideoMode({1400,820}),"Board Battle",sf::Style::Close);
     window.setFramerateLimit(60);
-
+ 
     sf::Font font;
     if(!font.openFromFile("C:/Windows/Fonts/tahoma.ttf"))
         if(!font.openFromFile("C:/Windows/Fonts/arial.ttf"))
             if(!font.openFromFile("C:/Windows/Fonts/consola.ttf"))
                 { cerr<<"Font error"<<endl; return 1; }
-
+ 
     GameEngine game;
     bool showEffectOverlay=false;
     sf::Clock clock;
-
+ 
     const float W=1400,H=820;
     const float cardW=230,cardH=130;
     const float boardLeft=cardW+30, boardRight=W-cardW-30;
@@ -736,12 +741,11 @@ int main(){
     const float rightPanelX=boardX+boardSize+16;
     const float ctrlY=boardY+boardSize+10;
     const float ctrlH=H-ctrlY-10;
-
+ 
     while(window.isOpen()){
         float dt=clock.restart().asSeconds();
         game.tickPopups(dt);
-
-        // แก้ไขระบบตรวจสอบ Event ให้เป็นรูปแบบที่ SFML 3 รองรับอย่างถูกต้อง
+ 
         while (std::optional<sf::Event> event = window.pollEvent()) {
             if (event->is<sf::Event::Closed>()) {
                 window.close();
@@ -749,11 +753,11 @@ int main(){
             else if (const auto* keyPressed = event->getIf<sf::Event::KeyPressed>()) {
                 if (keyPressed->code == sf::Keyboard::Key::Space && !game.isGameOver() && !game.hasRolledYet())
                     game.rollDice();
-                if (keyPressed->code == sf::Keyboard::Key::R) 
+                if (keyPressed->code == sf::Keyboard::Key::R)
                     game.resetGame();
-                if (keyPressed->code == sf::Keyboard::Key::E) 
+                if (keyPressed->code == sf::Keyboard::Key::E)
                     showEffectOverlay = !showEffectOverlay;
-                
+ 
                 if (!game.isGameOver() && game.hasRolledYet() && game.getStepsLeft() > 0) {
                     string dir;
                     if (keyPressed->code == sf::Keyboard::Key::W || keyPressed->code == sf::Keyboard::Key::Up)    dir = "W";
@@ -764,30 +768,29 @@ int main(){
                 }
             }
         }
-
+ 
         window.clear(sf::Color(12,14,28));
-
+ 
         sf::RectangleShape tb(sf::Vector2f(W,40)); tb.setPosition({0,0});
         tb.setFillColor(sf::Color(18,20,40)); window.draw(tb);
         drawText(window,font,"Board Battle",16,9,18,sf::Color(200,205,230));
-
+ 
         auto& players=game.getPlayers(); int ci=game.getCurrentPlayer();
         float cy0=50,cy1=50+cardH+12;
         drawPlayerCard(window,font,players[0],14,cy0,cardW,cardH,ci==0&&!game.isGameOver());
         drawPlayerCard(window,font,players[1],14,cy1,cardW,cardH,ci==1&&!game.isGameOver());
         drawPlayerCard(window,font,players[2],rightPanelX,cy0,cardW,cardH,ci==2&&!game.isGameOver());
         drawPlayerCard(window,font,players[3],rightPanelX,cy1,cardW,cardH,ci==3&&!game.isGameOver());
-
+ 
         float legendY=cy1+cardH+12;
         float legendH=boardY+boardSize-legendY;
         if(legendH>60) drawLegend(window,font,rightPanelX,legendY,cardW,legendH);
         float logY=legendY+legendH+8, logH=H-logY-10;
         if(logH>40) drawLog(window,font,game,rightPanelX,logY,cardW,logH);
-
+ 
         drawBoard(window,font,game,boardX,boardY,boardSize,showEffectOverlay);
         drawControls(window,font,game,14,ctrlY,rightPanelX-18,ctrlH,showEffectOverlay);
-
+ 
         window.display();
     }
     return 0;
-}
